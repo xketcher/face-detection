@@ -1,5 +1,6 @@
-python-telegram-bot==20.8
-opencv-python
-numpy
-uvicorn
 fastapi
+uvicorn
+aiogram
+pydub
+spleeter
+ffmpeg
