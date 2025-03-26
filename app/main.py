@@ -1,7 +1,11 @@
 import os
 import cv2
 import subprocess
-from telegram.ext import Updater, MessageHandler, Filters
+from fastapi import FastAPI
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters
+
+app = FastAPI()
 
 # Get bot token from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -23,11 +27,12 @@ def detect_faces(image_path):
     cv2.imwrite(output_path, img)
     return output_path
 
-def handle_photo(update, context):
-    """Handle received images, detect faces, and send results using curl."""
-    photo = update.message.photo[-1].get_file()
-    file_path = f"{photo.file_id}.jpg"
-    photo.download(file_path)
+async def handle_photo(update: Update, context):
+    """Handle received images, detect faces, and send results."""
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    file_path = f"{file.file_id}.jpg"
+    await file.download_to_drive(file_path)
     
     output_file = detect_faces(file_path)
 
@@ -40,14 +45,15 @@ def handle_photo(update, context):
         "-F", "caption=Face detection result"
     ])
 
-def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-    
-    updater.start_polling()
-    updater.idle()
+def start_bot():
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    bot_app.run_polling()
 
-if __name__ == "__main__":
-    main()
+@app.get("/")
+def home():
+    return {"message": "Face Detection Bot is Running"}
+
+# Start Telegram bot in a separate thread
+import threading
+threading.Thread(target=start_bot, daemon=True).start()
