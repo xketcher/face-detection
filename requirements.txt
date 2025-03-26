@@ -3,3 +3,4 @@ opencv-python
 numpy
 uvicorn
 fastapi
+dlib
