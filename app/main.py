@@ -1,19 +1,28 @@
 import os
 import cv2
-import subprocess
-from fastapi import FastAPI
-from telegram import Update
+import numpy as np
+import logging
+from fastapi import FastAPI, Request
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters
 
+# Load environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., "https://your-app.onrender.com"
+
+# Initialize FastAPI app
 app = FastAPI()
 
-# Get bot token from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Initialize Telegram Bot Application
+bot_app = Application.builder().token(BOT_TOKEN).build()
+bot = Bot(token=BOT_TOKEN)
 
 # Load OpenCV face detection model
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-def detect_faces(image_path):
+logging.basicConfig(level=logging.INFO)
+
+async def detect_faces(image_path):
     """Detect faces in an image and return the processed image path."""
     img = cv2.imread(image_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -34,26 +43,39 @@ async def handle_photo(update: Update, context):
     file_path = f"{file.file_id}.jpg"
     await file.download_to_drive(file_path)
     
-    output_file = detect_faces(file_path)
+    output_file = await detect_faces(file_path)
 
     chat_id = update.message.chat_id
-    subprocess.run([
-        "curl", "-s", "-X", "POST",
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-        "-F", f"chat_id={chat_id}",
-        "-F", f"photo=@{output_file}",
-        "-F", "caption=Face detection result"
-    ])
+    await bot.send_photo(chat_id=chat_id, photo=open(output_file, "rb"), caption="Face detection result")
 
-def start_bot():
-    bot_app = Application.builder().token(BOT_TOKEN).build()
-    bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    bot_app.run_polling()
+# Add message handler
+bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Webhook route for Telegram updates."""
+    data = await request.json()
+    update = Update.de_json(data, bot)
+    await bot_app.process_update(update)
+    return {"ok": True}
 
 @app.get("/")
-def home():
+async def home():
+    """Simple home route to check the server status."""
     return {"message": "Face Detection Bot is Running"}
 
-# Start Telegram bot in a separate thread
-import threading
-threading.Thread(target=start_bot, daemon=True).start()
+async def set_webhook():
+    """Set Telegram webhook if deployed on Render."""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"Webhook set: {webhook_url}")
+
+if __name__ == "__main__":
+    import asyncio
+
+    # Set webhook if URL exists; otherwise, use polling
+    if WEBHOOK_URL:
+        asyncio.run(set_webhook())
+    else:
+        bot_app.run_polling()
