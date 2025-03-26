@@ -1,13 +1,11 @@
 services:
   - type: web
-    name: face-detection-bot
+    name: telegram-music-bot
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
     envVars:
       - key: BOT_TOKEN
-        sync: false
-      - key: WEBHOOK_URL
         sync: false
     autoDeploy: true
