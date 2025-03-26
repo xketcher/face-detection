@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: face-detection-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app/main.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false  # Add your bot token in Render's environment variables
