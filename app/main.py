@@ -1,124 +1,84 @@
 import os
-import cv2
-import numpy as np
-import logging
+import shutil
+from fastapi import FastAPI, UploadFile, File
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ContentType
+from aiogram.utils.executor import start_polling
 import asyncio
-from fastapi import FastAPI, Request
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from spleeter.separator import Separator
+from pydub import AudioSegment
 
-# Load environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: "https://your-bot.onrender.com"
+TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variable
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
 
-# Initialize FastAPI app
+# FastAPI app setup
 app = FastAPI()
 
-# Initialize Telegram Bot Application
-bot_app = Application.builder().token(BOT_TOKEN).build()
-bot = Bot(token=BOT_TOKEN)
+# Spleeter separator (2 stems: Vocals + Instrumental)
+separator = Separator("spleeter:2stems-lite")
 
-# Load OpenCV face detection model
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+async def process_audio(input_path, output_path):
+    """Process the audio file to remove vocals and keep only the instrumental."""
+    separator.separate_to_file(input_path, "output")
 
-logging.basicConfig(level=logging.INFO)
-
-# Store received images
-received_images = []
-
-
-def detect_face(image):
-    """Detect a face in the image and return the face region + bounding box."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
-
-    if len(faces) == 0:
-        return None, None
-
-    x, y, w, h = faces[0]  # Take the first detected face
-    face_region = image[y:y+h, x:x+w]
+    # Extract instrumental file
+    instrumental_path = f"output/{os.path.splitext(os.path.basename(input_path))[0]}/accompaniment.wav"
     
-    return face_region, (x, y, w, h)
+    # Convert to MP3
+    sound = AudioSegment.from_wav(instrumental_path)
+    sound.export(output_path, format="mp3")
 
-
-def swap_faces(image1_path, image2_path):
-    """Swap faces between two images using OpenCV."""
-    img1 = cv2.imread(image1_path)
-    img2 = cv2.imread(image2_path)
-
-    face1, bbox1 = detect_face(img1)
-    face2, bbox2 = detect_face(img2)
-
-    if face1 is None or face2 is None:
-        return None  # No face detected
-
-    # Resize faces to match each other's size
-    face1_resized = cv2.resize(face1, (bbox2[2], bbox2[3]))
-    face2_resized = cv2.resize(face2, (bbox1[2], bbox1[3]))
-
-    # Swap faces
-    img1[bbox1[1]:bbox1[1]+bbox1[3], bbox1[0]:bbox1[0]+bbox1[2]] = face2_resized
-    img2[bbox2[1]:bbox2[1]+bbox2[3], bbox2[0]:bbox2[0]+bbox2[2]] = face1_resized
-
-    output_path = "swapped_faces.jpg"
-    cv2.imwrite(output_path, img1)
     return output_path
 
+@dp.message_handler(content_types=[ContentType.AUDIO, ContentType.VOICE])
+async def handle_audio(message: types.Message):
+    """Handle incoming audio files and process them."""
+    file_id = message.audio.file_id if message.audio else message.voice.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
 
-async def handle_photo(update: Update, context):
-    """Handle received images and swap faces when two are received."""
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
-    file_path = f"{file.file_id}.jpg"
-    await file.download_to_drive(file_path)
+    # Download the file
+    input_audio = f"input/{file_id}.ogg"
+    output_audio = f"output/{file_id}.mp3"
+    os.makedirs("input", exist_ok=True)
+    os.makedirs("output", exist_ok=True)
 
-    received_images.append(file_path)
+    await bot.download_file(file_path, input_audio)
 
-    if len(received_images) == 2:
-        output_file = swap_faces(received_images[0], received_images[1])
+    # Process the file to remove vocals
+    await process_audio(input_audio, output_audio)
 
-        if output_file:
-            await bot.send_photo(chat_id=update.message.chat_id, photo=open(output_file, "rb"),
-                                 caption="🔄 Face swap result!")
-        else:
-            await update.message.reply_text("⚠️ Face detection failed. Try sending clearer photos.")
+    # Send back the instrumental version
+    with open(output_audio, "rb") as audio_file:
+        await message.reply_audio(audio_file)
 
-        received_images.clear()  # Reset for next pair
+    # Cleanup files
+    os.remove(input_audio)
+    os.remove(output_audio)
 
-
-async def start_command(update: Update, context):
-    """Handle /start command."""
-    await update.message.reply_text("👋 Hello! Send me 2 photos, and I'll swap faces between them!")
-
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    """Webhook route for Telegram updates."""
-    data = await request.json()
-    update = Update.de_json(data, bot)
-
-    await bot_app.initialize()
-    await bot_app.process_update(update)
-
-    return {"ok": True}
-
+@app.on_event("startup")
+async def startup_event():
+    """Start the Telegram bot on FastAPI startup."""
+    loop = asyncio.get_event_loop()
+    loop.create_task(dp.start_polling())
 
 @app.get("/")
-async def home():
-    """Simple home route to check the server status."""
-    return {"message": "Face Swap Bot is Running"}
+def read_root():
+    return {"message": "Telegram Music Bot Running"}
 
+@app.post("/upload/")
+async def upload_file(file: UploadFile = File(...)):
+    """Upload an audio file and process it via API."""
+    input_audio = f"input/{file.filename}"
+    output_audio = f"output/{file.filename.replace('.ogg', '.mp3')}"
+    os.makedirs("input", exist_ok=True)
+    os.makedirs("output", exist_ok=True)
 
-async def set_webhook():
-    """Set Telegram webhook if deployed on Render."""
-    if WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await bot.set_webhook(webhook_url)
-        logging.info(f"Webhook set: {webhook_url}")
+    with open(input_audio, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
+    # Process the file to remove vocals
+    await process_audio(input_audio, output_audio)
 
-if __name__ == "__main__":
-    if WEBHOOK_URL:
-        asyncio.run(set_webhook())
-    else:
-        bot_app.run_polling()
+    return {"message": "Processing complete", "output_file": output_audio}
