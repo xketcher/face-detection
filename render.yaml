@@ -2,8 +2,10 @@ services:
   - type: web
     name: face-detection-bot
     env: python
+    plan: free  # Change to 'starter' or 'pro' if needed
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python app/main.py"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
     envVars:
       - key: BOT_TOKEN
-        sync: false  # Add your bot token in Render's environment variables
+        sync: false  # Set this in Render's environment variables
+    autoDeploy: true
