@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 # Load environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., "https://your-app.onrender.com"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: "https://your-bot.onrender.com"
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -23,7 +23,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_fronta
 logging.basicConfig(level=logging.INFO)
 
 
-async def detect_faces(image_path):
+async def detect_faces_in_image(image_path):
     """Detect faces in an image and return the processed image path."""
     img = cv2.imread(image_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -38,6 +38,38 @@ async def detect_faces(image_path):
     return output_path
 
 
+async def detect_faces_in_video(video_path):
+    """Detect faces in a video and return the processed video path."""
+    cap = cv2.VideoCapture(video_path)
+    
+    # Get video properties
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Codec for MP4
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    output_path = video_path.replace(".mp4", "_faces.mp4")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+        out.write(frame)
+
+    cap.release()
+    out.release()
+    
+    return output_path
+
+
 async def handle_photo(update: Update, context):
     """Handle received images, detect faces, and send results."""
     photo = update.message.photo[-1]
@@ -45,15 +77,30 @@ async def handle_photo(update: Update, context):
     file_path = f"{file.file_id}.jpg"
     await file.download_to_drive(file_path)
 
-    output_file = await detect_faces(file_path)
+    output_file = await detect_faces_in_image(file_path)
 
     chat_id = update.message.chat_id
-    await bot.send_photo(chat_id=chat_id, photo=open(output_file, "rb"), caption="Face detection result")
+    await bot.send_photo(chat_id=chat_id, photo=open(output_file, "rb"), caption="📷 Face detection result!")
+
+
+async def handle_video(update: Update, context):
+    """Handle received videos, detect faces, and send results."""
+    video = update.message.video
+    file = await video.get_file()
+    file_path = f"{file.file_id}.mp4"
+    await file.download_to_drive(file_path)
+
+    chat_id = update.message.chat_id
+    await update.message.reply_text("⏳ Processing video... This may take some time.")
+
+    output_file = await detect_faces_in_video(file_path)
+
+    await bot.send_video(chat_id=chat_id, video=open(output_file, "rb"), caption="🎥 Face detection result!")
 
 
 async def start_command(update: Update, context):
     """Handle /start command."""
-    await update.message.reply_text("👋 Hello! I am a Face Detection Bot.\nSend me a photo, and I'll detect faces!")
+    await update.message.reply_text("👋 Hello! Send me a photo or a video, and I'll detect faces!")
 
 
 async def help_command(update: Update, context):
@@ -62,7 +109,7 @@ async def help_command(update: Update, context):
                                     "/start - Start the bot\n"
                                     "/help - Show this help message\n"
                                     "/about - About this bot\n"
-                                    "📷 Send a photo, and I'll detect faces!")
+                                    "📷 Send a photo or video, and I'll detect faces!")
 
 
 async def about_command(update: Update, context):
@@ -73,17 +120,12 @@ async def about_command(update: Update, context):
                                     "👨‍💻 Developer: You!")
 
 
-async def echo_text(update: Update, context):
-    """Echo back any text messages sent by users."""
-    await update.message.reply_text(f"You said: {update.message.text}")
-
-
 # Add handlers to the bot
 bot_app.add_handler(CommandHandler("start", start_command))
 bot_app.add_handler(CommandHandler("help", help_command))
 bot_app.add_handler(CommandHandler("about", about_command))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_text))  # Echo all text
+bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 
 
 @app.post("/webhook")
