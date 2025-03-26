@@ -1,6 +1,5 @@
 import os
 import cv2
-import dlib
 import numpy as np
 import logging
 import asyncio
@@ -19,11 +18,8 @@ app = FastAPI()
 bot_app = Application.builder().token(BOT_TOKEN).build()
 bot = Bot(token=BOT_TOKEN)
 
-# Load OpenCV and dlib face detection models
+# Load OpenCV face detection model
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-predictor_path = "shape_predictor_68_face_landmarks.dat"  # Download from dlib
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor(predictor_path)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,47 +27,38 @@ logging.basicConfig(level=logging.INFO)
 received_images = []
 
 
-def extract_face_landmarks(image_path):
-    """Extract face landmarks from an image."""
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def detect_face(image):
+    """Detect a face in the image and return the face region + bounding box."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
 
-    faces = detector(gray)
     if len(faces) == 0:
         return None, None
 
-    shape = predictor(gray, faces[0])
-    landmarks = np.array([(shape.part(i).x, shape.part(i).y) for i in range(68)])
-
-    return landmarks, img
+    x, y, w, h = faces[0]  # Take the first detected face
+    face_region = image[y:y+h, x:x+w]
+    
+    return face_region, (x, y, w, h)
 
 
 def swap_faces(image1_path, image2_path):
-    """Swap faces between two images."""
-    landmarks1, img1 = extract_face_landmarks(image1_path)
-    landmarks2, img2 = extract_face_landmarks(image2_path)
+    """Swap faces between two images using OpenCV."""
+    img1 = cv2.imread(image1_path)
+    img2 = cv2.imread(image2_path)
 
-    if landmarks1 is None or landmarks2 is None:
+    face1, bbox1 = detect_face(img1)
+    face2, bbox2 = detect_face(img2)
+
+    if face1 is None or face2 is None:
         return None  # No face detected
 
-    # Compute the convex hull (mask) around the face
-    hull1 = cv2.convexHull(landmarks1)
-    hull2 = cv2.convexHull(landmarks2)
+    # Resize faces to match each other's size
+    face1_resized = cv2.resize(face1, (bbox2[2], bbox2[3]))
+    face2_resized = cv2.resize(face2, (bbox1[2], bbox1[3]))
 
-    # Create face masks
-    mask1 = np.zeros_like(img1, dtype=np.uint8)
-    mask2 = np.zeros_like(img2, dtype=np.uint8)
-    cv2.fillConvexPoly(mask1, hull1, (255, 255, 255))
-    cv2.fillConvexPoly(mask2, hull2, (255, 255, 255))
-
-    # Extract face region from image2 and resize to fit image1
-    face2 = cv2.bitwise_and(img2, mask2)
-    bbox = cv2.boundingRect(hull2)
-    x, y, w, h = bbox
-    face2_resized = cv2.resize(face2[y:y+h, x:x+w], (w, h))
-
-    # Place the resized face from image2 onto image1
-    img1[y:y+h, x:x+w] = face2_resized
+    # Swap faces
+    img1[bbox1[1]:bbox1[1]+bbox1[3], bbox1[0]:bbox1[0]+bbox1[2]] = face2_resized
+    img2[bbox2[1]:bbox2[1]+bbox2[3], bbox2[0]:bbox2[0]+bbox2[2]] = face1_resized
 
     output_path = "swapped_faces.jpg"
     cv2.imwrite(output_path, img1)
@@ -119,7 +106,7 @@ async def telegram_webhook(request: Request):
 @app.get("/")
 async def home():
     """Simple home route to check the server status."""
-    return {"message": "Face Detection & Swap Bot is Running"}
+    return {"message": "Face Swap Bot is Running"}
 
 
 async def set_webhook():
